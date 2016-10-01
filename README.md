@@ -21,10 +21,12 @@ Working examples are provided in scripts, each generating a basic CSV log file (
 1. `slack_minimizer.py`: 
 This contains code for a generic classifier (feature) aggregator in the muffled formulation. Included is a class to minimize the slack function, and a working example of such aggregation.
 
+<!---
 2. `ssb-mower.py`: 
 This runs the `Hedge-Mower` family of algorithms for aggregating decision trees, including the two extremes referred to in the [paper](http://arxiv.org/abs/1605.08833) as `Hedge-Mower` and `Hedge-Mower-1`.
+--->
 
-3. `marvin.py`: 
+2. `marvin.py`: 
 This runs the `Marvin` family of algorithms for incrementally learning an ensemble of classifiers and simultaneously how to best aggregate them -- a similar concept to supervised boosting. The file contains a class to run such algorithms with, and a working example of its usage.
 
 
