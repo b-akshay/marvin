@@ -1,214 +1,263 @@
 import numpy as np
 import scipy as sp
-import math
-import time
 import sklearn.metrics
-import SSutils
-import scipy.special
-import matplotlib.pyplot as plt
+import muffled_utils
+import time
 
-""" This class is just for data that can fit in memory, which are passed to the initial instance. """
 
-class slackMinimizer (object):
+class SlackMinimizer(object):
     """
-    A class that aggregates a given set of classifiers, as in the paper "Scalable semi-supervised aggregation of classifiers."
-    "labeled_set" and "unlabeled_set" are (# examples) x (# classifiers) matrices, one row per example. We assume that they fit in memory.
-    "labels" is a vector of the labels in the labeled_set.
+    A class that aggregates a given ensemble of specialist classifiers, as in the paper:: 
+    "Scalable semi-supervised aggregation of classifiers," Balsubramani and Freund, NIPS 2015.
+    Attributes:
+        unlabeled_set: Matrix of unlabeled data. {# examples} rows and {# classifiers} cols.
+        b_vector: Vector of label correlation bounds for the ensemble classifiers.
+        weights: Weight vector for the ensemble classifiers.
+        unlabeled_labels: Vector containing the labels of the unlabeled data. 
+            Used only for diagnostic info, not for learning.
+        holdout_set: As unlabeled_set, but with the holdout dataset. This dataset 
+            is not used in the minimization. It has often been used to estimate b_vector.
+        holdout_labels: Vector containing the labels of the holdout data. 
+        validation_set: As unlabeled_set, but with a validation dataset. 
+            This is held out from the entire learning procedure and is used to measure performance. 
+            If not specified, it defaults to holdout_set.
+        validation_labels: Vector containing the labels of the validation data. 
+            If not specified, it defaults to holdout_labels.
+
+    All datasets are assumed to fit in memory. Since the holdout set may have been used to estimate 
+    b_vector, the learned classifier may overfit on it. Comparing holdout performance to validation 
+    performance can be used to detect overfitting. 
+    TODO(Akshay): Allow unlabeled data to be accessed out of core.
     """
 
-    def __init__(self, unlabeled_set, unlabeled_labels, holdout_set, holdout_labels, labeled_set=None, labels=None, 
-                 outdiag_set=None, outdiag_labels=None, b_vector=None, sigma=None, b_calc='out'):
+    def __init__(self, b_vector, unlabeled_set, holdout_set, holdout_labels, 
+                 unlabeled_labels=None, validation_set=None, validation_labels=None, weights=None):
         self.unlabeled_set = unlabeled_set
+        self.b_vector = b_vector
         self.unlabeled_labels = unlabeled_labels
         self.holdout_set = holdout_set
         self.holdout_labels = holdout_labels
-        self.labeled_set = labeled_set
-        self.labels = labels
-        self.outdiag_set = outdiag_set
-        self.outdiag_labels = outdiag_labels
-        
-        self.b_vector = b_vector
-
-        # Initialize sigma to a random vector, and scale them so the data have average margin 1.
-        if sigma is None:
-            sigma = np.random.randn(self.unlabeled_set.shape[1])
-            margsunl = self.unlabeled_set.dot(sigma)
-            meanmarg = 1.0/np.mean(np.abs(margsunl))
-            self.sigma = meanmarg*sigma
-            self.margsunl = meanmarg*margsunl     # vector of <x, sigma> values, one for each of numunl examples
-            self.margsout = meanmarg*self.holdout_set.dot(sigma)
-            self.margdiag = meanmarg*self.outdiag_set.dot(sigma)
+        if validation_set is None:
+            self.validation_set = holdout_set
+            self.validation_labels = holdout_labels
         else:
-            self.sigma = sigma
-            self.margsunl = self.unlabeled_set.dot(np.array(sigma))
-            self.margsout = self.holdout_set.dot(np.array(sigma))
-            self.margdiag = self.outdiag_set.dot(np.array(sigma))
-
-        self.logloss = False
+            self.validation_set = validation_set
+            self.validation_labels = validation_labels
+        # By default, initialize weights to a random vector, and scale it so unlabeled data 
+        # have an average score (<x, weights> value) of 1.
+        if weights is None:
+            weights = np.random.randn(self.unlabeled_set.shape[1])
+            scoresunl = self.unlabeled_set.dot(weights)
+            meanscore = 1.0 / np.mean(np.abs(scoresunl))
+            self.weights = meanscore * weights
+            self._scoresunl = meanscore * scoresunl
+        else:
+            self.weights = np.array(weights)
+            self._scoresunl = self.unlabeled_set.dot(self.weights)
     
-    
-    def projslackfunc(self, search_dir):
-        def toret(alpha):
-            margs = self.margsunl + self.unlabeled_set.dot(alpha*search_dir)
-            return -np.dot(self.b_vector, self.sigma + alpha*search_dir) + np.mean(np.maximum(np.abs(margs), 1.0)) 
-        return toret
+    def calc_grad(self, indices_this_iteration=None):
+        """
+        Calculate gradient of slack function using some subset of unlabeled data.
+        Args:
+            indices_this_iteration: list of indices of unlabeled data to use to 
+                estimate the gradient. Defaults to using all unlabeled data.
+        Returns:
+            Estimated gradient of the slack function: a vector of floats.
+        """
+        if indices_this_iteration is None:
+            indices_this_iteration = range(self.unlabeled_set.shape[0])
+        unl_set = self.unlabeled_set[indices_this_iteration, :]
+        return -self.b_vector + (1.0/len(indices_this_iteration)) * unl_set.transpose().dot(
+            self._hallucinate_labels(scores=self._scoresunl[indices_this_iteration]))
 
+    def predict(self, dataset):
+        """
+        Predict labels on a dataset using current weights over ensemble.
+        Args:
+            dataset: Matrix of specialist predictions on data. Dimensions: {# examples} rows, 
+            {# classifiers} columns. E.g. the sparse CSR matrix generated by CompositeFeature.featurize(...). 
+        Returns:
+            A vector representing the muffled predictions on the dataset, using 
+            the current weight vector (self.weights).
+        """
+        return np.clip(dataset.dot(self.weights), -1, 1)
+        # return 2.0*scipy.special.expit(dataset.dot(self.weights)) - 1
 
-    def hallucinate_labels (self, margins=None):
-        # Calculate hallucinated labels for each unlabeled data point, at given margs or unlabeled. 
-        # TODO: Different losses give different gradients here. 
-        if margins is None:
-            margins = self.margsunl
-        ghlabels = np.sign(margins)
-        ghlabels[np.where(np.abs(margins) < 1)] = 0
-        if self.logloss:
-            ghlabels = 2.0*scipy.special.expit(margins) - 1
-        return ghlabels
+    def compute_AUC(self, dataset=None, labels=None):
+        """ Compute AUC of the aggregated predictions on a dataset using current weights. """
+        if dataset is None:
+            dataset = self.validation_set
+            labels = self.validation_labels
+        return sklearn.metrics.roc_auc_score(labels, self.predict(dataset))
 
-    
-    def calc_grad (self, indices_this_iteration=[]):
-        if len(indices_this_iteration) == 0:
-            indices_this_iteration = range(len(self.unlabeled_labels))
-        unl_set = self.unlabeled_set[indices_this_iteration,:]
-        return -self.b_vector + (1.0/len(indices_this_iteration))*unl_set.transpose().dot(
-            self.hallucinate_labels(margins=self.margsunl[indices_this_iteration]))
-
-
-    # Assumes dataset is a sparse csr_matrix, with a number of columns equal to the actual number of hypotheses (via composite_feature.featurize()). 
-    def predict (self, dataset):
-        return np.clip(dataset.dot(self.sigma), -1, 1)
-
-
-    def AUC (self, dataset, data_labels):
-        return sklearn.metrics.roc_auc_score(data_labels, self.predict(dataset))
-
-    
-    # Run duration iterations of the algorithm, starting at iteration timestart with current sigma. 
-    # Holdout info and test labels should be full already.
-    def sgd (self, duration, timetostart=5, linesearch=True, linesearch_tol=0.00005, projection='pos', verbose=False, unl_stride=False, unl_stride_size=5000):
+    def sgd(self, duration, linesearch=True, linesearch_tol=0.00005,
+        unl_stride_size=0, logging_interval=10):
+        """
+        Run minibatch stochastic gradient descent to minimize the slack function with the unlabeled data. 
+        Args:
+            duration: int; Number of iterations to run. 
+            linesearch: optional Boolean; True iff line search is to be used to find 
+                the step size, otherwise a step size schedule of t^{-0.5} is used.
+            linesearch_tol: optional float; Tolerance used to terminate line search procedure.
+            unl_stride_size: optional int; The number of unlabeled data per minibatch. 
+                Defaults to 0, which indicates that the whole unlabeled set should be 
+                used each minibatch. 
+            logging_interval: optional int; Interval between timesteps on which statistics are computed. 
+                0 indicates to not log at all.
+        Returns:
+            List of 6-tuples of floats, giving performance statistics at each iteration. 
+            The first two elements of each tuple give the error and AUC on the unlabeled data, 
+            the next two on the holdout data, and the last two on the validation data. 
+            If labels for any are not available, returns error/AUC of 1.0/0.0.
+        """
         inittime = time.time()
         statauc = []
-        EMA_stepsize = 0.2  # exponential moving average, with parameter beta; initialized to some reasonable constant
-        beta = 0.5 # exponential moving average decay parameter in [0,1)
-
-        for iterct in range(timetostart, timetostart+duration):
-            if not unl_stride:
-                unl_stride_size = len(self.unlabeled_labels)
-            indices_this_iteration = np.random.choice(self.unlabeled_set.shape[0], unl_stride_size, replace=False)
-            grad = self.calc_grad(indices_this_iteration=indices_this_iteration)
-            
+        # Set max step size used to start line search; exponential moving average 
+        # used because step sizes change by several orders of magnitude over a typical run.
+        EMA_stepsize = 0.2
+        beta = 0.5   # exponential moving average decay parameter
+        if unl_stride_size == 0:
+            unl_stride_size = self.unlabeled_set.shape[0]
+        time_to_start = 5
+        for iterct in range(duration):
+            unl_indices_this_iteration = np.random.choice(
+                self.unlabeled_set.shape[0], unl_stride_size, replace=False)
+            grad = self.calc_grad(indices_this_iteration=unl_indices_this_iteration)
+            # TODO: Can also add an option to use sp.optimize.brent instead of 
+            # our custom golden section search implementation.
             if linesearch:
-                max_stepsize = 2*EMA_stepsize
-                stepsize = SSutils.golden_section_search(self.projslackfunc(-grad), 0, max_stepsize, tol=linesearch_tol)
+                max_stepsize = 2*EMA_stepsize      # Double each iteration to allow the step size to increase.
+                stepsize = muffled_utils.golden_section_search(
+                    self._proj_slack_func(-grad), 0, max_stepsize, tol=linesearch_tol)
+                # stepsize2 = sp.optimize.brent(self._proj_slack_func(-grad), tol=linesearch_tol)
                 EMA_stepsize = beta*EMA_stepsize + (1-beta)*stepsize
-                #if verbose:
-                #    print stepsize, max_stepsize
             else:
-                stepsize = 1.0*np.power(iterct, -0.5)
-
-            weight_to_add = -stepsize*grad
-            self.sigma += weight_to_add
+                stepsize = 1.0*np.power(iterct + time_to_start, -0.5)   # Standard for SGD on convex functions
+            self.weights += -stepsize * grad
+            self.weights = np.maximum(self.weights, 0.0)   # Project to positive orthant
+            self._scoresunl = self.unlabeled_set.dot(self.weights)
             
-            # Project down if necessary, otherwise leave the sigma alone.
-            if projection == 'pos':
-                self.sigma = np.maximum(self.sigma, 0.0)
-
-            self.margsunl = self.unlabeled_set.dot(self.sigma)
-            self.margsout = self.holdout_set.dot(self.sigma)
-            self.margdiag = self.outdiag_set.dot(self.sigma)
-
-            preds_unl = np.clip(self.margsunl, -1, 1)
-            preds_out = np.clip(self.margsout, -1, 1)
-            preds_diag = np.clip(self.margdiag, -1, 1)
-            alg_loss_unl = 1.0 - SSutils.accuracy_calc (self.unlabeled_labels, preds_unl)
-            alg_loss_out = 1.0 - SSutils.accuracy_calc (self.holdout_labels, preds_out)
-            alg_loss_diag = 1.0 - SSutils.accuracy_calc (self.outdiag_labels, preds_diag)
-            alg_auc_unl = sklearn.metrics.roc_auc_score (self.unlabeled_labels, preds_unl)
-            alg_auc_out = sklearn.metrics.roc_auc_score (self.holdout_labels, preds_out)
-            alg_auc_diag = sklearn.metrics.roc_auc_score (self.outdiag_labels, preds_diag)
-            
-            if self.logloss:
-                ll_preds_unl = 2.0*scipy.special.expit(self.margsunl) - 1
-                ll_preds_out = 2.0*scipy.special.expit(self.margsout) - 1
-                vect_preds_unl = np.array([[0.5*(1-x), 0.5*(1+x)] for x in ll_preds_unl])
-                vect_preds_out = np.array([[0.5*(1-x), 0.5*(1+x)] for x in ll_preds_out])
-                ll_loss_unl = sklearn.metrics.log_loss(self.unlabeled_labels, vect_preds_unl)
-                ll_loss_out = sklearn.metrics.log_loss(self.holdout_labels, vect_preds_out)
-            
-            besthyp = np.argmax(np.abs(grad))
-            bestgrad = np.max(np.abs(grad))
-
-            if (iterct%30 == 0 or (iterct%5 == 0 and verbose)):
-                print(iterct, time.time() - inittime) 
-                #print('Unlabeled error:  ' + str(alg_loss_unl) + ' and AUC: ' + str(alg_auc_unl))
-                print('Holdout error:  ' + str(alg_loss_out) + ' and AUC: ' + str(alg_auc_out))
-                print('Diagnostic error:  ' + str(alg_loss_diag) + ' and AUC: ' + str(alg_auc_diag))
-            statauc.append((alg_loss_unl, alg_auc_unl, alg_loss_out, alg_auc_out, alg_loss_diag, alg_auc_diag))
-        # We must eventually return both particles and margs, because margs is over all data and not just the Monte Carloed stuff.
+            if bool(logging_interval and (iterct%logging_interval == 0)):
+                preds_unl = np.clip(self._scoresunl, -1, 1)
+                if self.unlabeled_labels is not None:
+                    alg_loss_unl = 1.0 - muffled_utils.accuracy_calc(self.unlabeled_labels, preds_unl)
+                    alg_auc_unl = sklearn.metrics.roc_auc_score(self.unlabeled_labels, preds_unl)
+                else:
+                    alg_loss_unl = 1.0
+                    alg_auc_unl = 0.0
+                preds_out = self.predict(self.holdout_set)
+                alg_loss_out = 1.0 - muffled_utils.accuracy_calc(self.holdout_labels, preds_out)
+                alg_auc_out = sklearn.metrics.roc_auc_score(self.holdout_labels, preds_out)
+                preds_val = self.predict(self.validation_set)
+                alg_loss_val = 1.0 - muffled_utils.accuracy_calc(self.validation_labels, preds_val)
+                alg_auc_val = sklearn.metrics.roc_auc_score(self.validation_labels, preds_val)
+                # vect_preds_out = np.array([[0.5*(1-x), 0.5*(1+x)] for x in logloss_preds_out])
+                # logloss_out = sklearn.metrics.log_loss(self.holdout_labels, vect_preds_out)
+                print 'After iteration  ' + str(iterct) + ':\t Time = ' + str(time.time() - inittime)
+                print('Holdout: \t Error = ' + str(alg_loss_out) + '\t AUC: ' + str(alg_auc_out))
+                print('Validation: \t Error = ' + str(alg_loss_val) + '\t AUC: ' + str(alg_auc_val))
+                statauc.append(
+                    (alg_loss_unl, alg_auc_unl, alg_loss_out, alg_auc_out, alg_loss_val, alg_auc_val))
         return statauc
 
+    def _hallucinate_labels(self, scores=None):
+        """
+        Calculate hallucinated labels for dataset using given scores, 
+        which default to current unlabeled scores. We treat borderline labels as clipped, 
+        to avoid problems of zero gradient upon initialization. 
+        We also set labels on hedged examples to zero instead of random fair 
+        binary coin flips, to reduce variance and improve performance. 
+        """
+        # TODO(Akshay): Implement different labels for different losses. 
+        if scores is None:
+            scores = self._scoresunl
+        ghlabels = np.sign(scores)
+        ghlabels[np.where(np.abs(scores) < 1)] = 0
+        # if self.logloss: ghlabels = 2.0*scipy.special.expit(scores) - 1
+        return ghlabels
+
+    def _proj_slack_func(self, search_dir):
+        """
+        Given a line search direction from the current weight vector, returns a function (closure) that 
+        projects the slack function in that direction.
+        """
+        def _toret(alpha):
+            scores = self._scoresunl + self.unlabeled_set.dot(alpha * search_dir)
+            return -np.dot(self.b_vector, self.weights + alpha * search_dir) + np.mean(np.maximum(np.abs(scores), 1.0)) 
+        return _toret
 
 
 """
+A basic working example: 
+(*) Subsamples an amount of labeled and unlabeled data at random from an input file.
+(*) Uses 1/4 of the labeled data to train a random forest with 100 trees, and the other 3/4 to estimate 
+    the b_vector over the random forest trees (without deriving specialists).
+(*) Minimizes the slack function over the 100 trees.
 Usage: 
-python slack_minimizer.py <Wilson failure probability> < k (# top classifiers)> 
-<mode setting {allrel, topk}> <number of Monte Carlo trials> <OPTIONAL: is_tree>
-
+python slack_minimizer.py <input data file name> <# of labeled data> <# of unlabeled data> 
+<Wilson failure probability> <number of trees in random forest>
 Example:
-python slack_minimizer.py Data/covtype_binary_all.csv 10000 100000 covtype 0.005 0 allrel 20 False
+python slack_minimizer.py Data/covtype_binary_all.csv 10000 50000 0.005 25
 creates file: logs/covtype_tree_0.005_allrel_10000.csv
 """
-
-"""
 if __name__ == "__main__":
+    import time, csv, sys
+    import composite_feature
+    from scipy.sparse import csr_matrix
+    from sklearn.ensemble import RandomForestClassifier
+    import argparse
 
-    labeled_file = sys.argv[1]
-    TOTAL_LABELS = int(sys.argv[2])
-    UNLABEL_SET_SIZE = int(sys.argv[3])
-    root = sys.argv[4]
-    failure_prob = float(sys.argv[5])
-    k = int(sys.argv[6])
-    modesetting = sys.argv[7]
-    num_MCtrials = int(sys.argv[8])
+    parser = argparse.ArgumentParser(
+        description="""
+        Minimizes the slack function, given an ensemble of classifiers from which to derive specialists.
+        Contact: Akshay Balsubramani <abalsubr@ucsd.edu>
+        """)
+    parser.add_argument('labeled_file', help='CSV file from which to read data.')
+    parser.add_argument('total_labels', type=int, 
+        help='Number of labeled data in total (to be divided between training set for the ensemble and holdout for calculating b).')
+    parser.add_argument('unlabeled_set_size', type=int, help='Number of unlabeled data.')
+    parser.add_argument('--failure_prob', '-f', type=float, default=0.005, 
+        help='Failure probability for calculating ensemble error bounds (i.e., Wilson intervals for label correlations).')
+    parser.add_argument('--num_base_classifiers', '-b', type=int, default=20, 
+        help='Number of trees in the random forest.')
+    parser.add_argument('--num_trials', '-n', type=int, dest='num_MCtrials', default=1, 
+        help='Number of Monte Carlo trials of the experiment to run.')
+    parser.add_argument('--k', '-k', type=int, default=0, 
+        help="""Approximate number of derived specialists to generate from each base classifier.
+        More precisely, the best k (by Wilson error bound) are taken, along with the base classifier if it is not already 
+        one of the best k. See composite_feature.featurize(...) docs for more details. Defaults to 0.""")
+    parser.add_argument('--validation_set_size', '-v', type=int, default=1000, 
+        help='Number of validation data.')
+    args = parser.parse_args()
 
-    if len(sys.argv) >= 10:
-        num_iters = int(sys.argv[9])
-    else:
-        num_iters = 100
-
-    LABELED_SET_SIZE = int(TOTAL_LABELS*0.3)
-    HOLDOUT_SET_SIZE = TOTAL_LABELS - LABELED_SET_SIZE
-    HOLDOUT_SET2_SIZE = 100
-
-    TOTAL_SIZE = LABELED_SET_SIZE+UNLABEL_SET_SIZE+HOLDOUT_SET_SIZE+HOLDOUT_SET2_SIZE
-    classstr = '_'
-
-    logfile_auc = 'logs/' + root + classstr + str(failure_prob) + '_' + modesetting + '_' + str(TOTAL_LABELS) + 'auc.csv'
-    logfile_err = 'logs/' + root + classstr + str(failure_prob) + '_' + modesetting + '_' + str(TOTAL_LABELS) + 'err.csv'
-
+    root = 'muffled'
+    labeled_set_size = int(args.total_labels*0.25)
+    holdout_set_size = args.total_labels - labeled_set_size
+    logname_auc = 'logs/' + root + '_' + str(args.total_labels) + '_tailprob' + str(args.failure_prob) + '_auc.csv'
+    logname_err = 'logs/' + root + '_' + str(args.total_labels) + '_tailprob' + str(args.failure_prob) + '_err.csv'
     inittime = time.time()
-    with open( logfile_auc, 'a' ) as fo_auc, open( logfile_err, 'a' ) as fo_err:
-        writer_auc = csv.writer( fo_auc)
-        writer_err = csv.writer( fo_err)
-        for mctrial in range(num_MCtrials):
-            (x_all, y_all) = read_data (labeled_file, TOTAL_SIZE)
-            print 'Data read: ' + str(time.time() - inittime)
-            (x_train, y_train, x_unl, y_unl, x_out, y_out, x_out2, y_out2) = init_data(
-                x_all, y_all, LABELED_SET_SIZE, UNLABEL_SET_SIZE, HOLDOUT_SET_SIZE, HOLDOUT_SET2_SIZE)
-            print mctrial, time.time() - inittime
-            skcl = init_base_classifiers(x_train, y_train, num_iters=num_iters)
-            rf = skcl[0][1]
-            line = []
-            (xtra_b, xtra_unl, xtra_out, xtra_out2, list_compfeats) = gen_compfeats(rf.estimators_, y_out, x_out, x_unl, 
-                x_out2, k=k, failure_prob=failure_prob, mode=modesetting, numsamp_min=0, is_sklearn_rf=True, is_tree=True)
-            gradh = slack_minimizer.slackMinimizer(xtra_unl, y_unl, xtra_out, y_out, b_vector=xtra_b, 
-                outdiag_set=xtra_unl, outdiag_labels=y_unl)
-            statauc = gradh.sgd(50, verbose=True, unl_stride=True, unl_stride_size=100)
-            print 'ACTIVE NODES: ' + str(np.mean([len(h.relevant_ndces) for h in list_compfeats]))
-            print 'TOTAL NODES: ' + str(np.mean([h.numnodes for h in list_compfeats]))
-            print 'AUC: ' + str (gradh.AUC(xtra_unl, y_unl))
+    with open(logname_auc, 'a') as fo_auc, open(logname_err, 'a') as fo_err:
+        writer_auc = csv.writer(fo_auc)
+        writer_err = csv.writer(fo_err)
+        for mctrial in range(args.num_MCtrials):
+            print 'Trial ' + str(mctrial) + ':\tTime = ' + str(time.time() - inittime)
+            (x_train, y_train, x_unl, y_unl, x_out, y_out, x_validate, y_validate) = muffled_utils.read_random_data_from_csv(
+                args.labeled_file, labeled_set_size, args.unlabeled_set_size, holdout_set_size, args.validation_set_size)
+            print('Data loaded. \tTime = ' + str(time.time() - inittime))
+            rf = RandomForestClassifier(n_estimators=args.num_base_classifiers, n_jobs=-1)
+            rf.fit(x_train, y_train)
+            print('Random forest trained. \tTime = ' + str(time.time() - inittime))
+            (b_vector, allfeats_unl, allfeats_out, allfeats_val) = muffled_utils.gen_compfeats(
+                rf.estimators_, x_out, y_out, x_unl, x_validate, k=args.k, 
+                failure_prob=args.failure_prob, from_sklearn_rf=True, use_tree_partition=False)
+            print ('Featurizing done. \tTime = ' + str(time.time() - inittime))
+            gradh = SlackMinimizer(
+                b_vector, allfeats_unl, allfeats_out, y_out, unlabeled_labels=y_unl,
+                validation_set=allfeats_val, validation_labels=y_validate)
+            statauc = gradh.sgd(30, unl_stride_size=100, logging_interval=5)
+            print 'Final validation AUC:\t' + str(gradh.compute_AUC())
             _, _, _, _, cl_err, cl_auc = zip(*statauc)
-            writer_auc.writerow( cl_auc )
-            writer_err.writerow( cl_err )
-
-"""
+            # print cl_auc, '\n', cl_err
+            writer_auc.writerow(cl_auc)
+            writer_err.writerow(cl_err)
+    print 'Written to files:\t' + logname_auc + ',\t ' + logname_err

@@ -11,7 +11,7 @@ This package is under constant revision and expansion, and so there will be impl
 
 ## System Requirements
 - Python v2.7.11, NumPy v1.10.4, SciPy v0.17.0 (All are standard latest stable releases. Earlier versions may work, as Marvin only uses basic matrix and linear algebra functionality.)
-- scikit-learn v0.18.dev0 (The development release, not stable. This is only needed to quickly explore the specialist partitioning structure of a decision tree, and so only used for the `Hedge-Mower` algorithm and variants, not the basic version of `Marvin`. A much slower (>15x) backward-compatible implementation in pure Python, which works with the stable release scikit-learn v0.17.1, is provided in the source code comments of `composite_feature.py`.)
+- scikit-learn v0.18.dev0 (The development release, not stable. This is only needed to quickly explore the specialist partitioning structure of a decision tree, and so only used for the `Hedge-Mower` algorithm and variants, not the basic version of `Marvin`. A much slower (~30x) backward-compatible implementation in pure Python, which works with the stable release scikit-learn v0.17.1, is provided in the source code comments of `composite_feature.py`.)
 
 
 
@@ -39,9 +39,9 @@ This runs the `Marvin` family of algorithms for incrementally learning an ensemb
 ## Further Information:
 - For more on the "muffled" approach to semi-supervised learning, please refer to the following papers:
 
-> Optimal Binary Classifier Aggregation for General Losses. Akshay Balsubramani and Yoav Freund. [Link to arXiv](http://arxiv.org/abs/1510.00452).
-> Scalable Semi-Supervised Aggregation of Classifiers. Akshay Balsubramani and Yoav Freund. [Link to arXiv](http://arxiv.org/abs/1506.05790).
-> Optimally Combining Classifiers Using Unlabeled Data. Akshay Balsubramani and Yoav Freund. [Link to arXiv](http://arxiv.org/abs/1503.01811).
+> Optimal Binary Classifier Aggregation for General Losses. Akshay Balsubramani and Yoav Freund. NIPS 2016. [Link to arXiv](http://arxiv.org/abs/1510.00452).
+> Scalable Semi-Supervised Aggregation of Classifiers. Akshay Balsubramani and Yoav Freund. NIPS 2015. [Link to arXiv](http://arxiv.org/abs/1506.05790).
+> Optimally Combining Classifiers Using Unlabeled Data. Akshay Balsubramani and Yoav Freund. COLT 2015. [Link to arXiv](http://arxiv.org/abs/1503.01811).
 
 
 ## Contact:
