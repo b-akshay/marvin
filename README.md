@@ -10,8 +10,8 @@ This package is under constant revision and expansion, and so there will be impl
 
 
 ## System Requirements
-- Python v2.7.11, NumPy v1.10.4, SciPy v0.17.0 (All are standard latest stable releases. Earlier versions may work, as Marvin only uses basic matrix and linear algebra functionality.)
-- scikit-learn v0.18.dev0 (The development release, not stable. This is only needed to quickly explore the specialist partitioning structure of a decision tree, and so only used for the `Hedge-Mower` algorithm and variants, not the basic version of `Marvin`. A much slower (~30x) backward-compatible implementation in pure Python, which works with the stable release scikit-learn v0.17.1, is provided in the source code comments of `composite_feature.py`.)
+- Python v2.7.11, NumPy v1.11.2, SciPy v0.18.1 (All are standard latest stable releases. Earlier versions may work, as the algorithms only use basic matrix and linear algebra functionality.)
+- scikit-learn v0.18.0 (The latest stable release. Versions <=0.17 will not work without change; see the source code comments of `composite_feature.py`.)
 
 
 
@@ -21,22 +21,22 @@ Working examples are provided in scripts, each generating a basic CSV log file (
 1. `slack_minimizer.py`: 
 This contains code for a generic classifier (feature) aggregator in the muffled formulation. Included is a class to minimize the slack function, and a working example of such aggregation.
 
+2. `marvin.py`: 
+This runs the `Marvin` family of algorithms for incrementally learning an ensemble of classifiers and simultaneously how to best aggregate them -- a similar concept to supervised boosting. The file contains a class to run such algorithms with, and a working example of its usage.
+
 <!---
 2. `ssb-mower.py`: 
 This runs the `Hedge-Mower` family of algorithms for aggregating decision trees, including the two extremes referred to in the [paper](http://arxiv.org/abs/1605.08833) as `Hedge-Mower` and `Hedge-Mower-1`.
 --->
-
-2. `marvin.py`: 
-This runs the `Marvin` family of algorithms for incrementally learning an ensemble of classifiers and simultaneously how to best aggregate them -- a similar concept to supervised boosting. The file contains a class to run such algorithms with, and a working example of its usage.
 
 
 
 ## Implementation Notes:
 `ssb-benchmarks.py` provides code for running the benchmarks we compare against, using `scikit-learn` to fit and evaluate ensemble and non-ensemble classification methods.
 
-
+<!---
 - To do: extend to other loss functions as in [this paper](http://arxiv.org/abs/1510.00452). 
-
+--->
 
 ## Further Information:
 - For more on the "muffled" approach to semi-supervised learning, please refer to the following papers:

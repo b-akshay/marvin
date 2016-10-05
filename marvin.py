@@ -27,7 +27,7 @@ class Marvin(object):
         enslist: List specifying the classifiers in the ensemble in the order they are added. 
             Each entry is a pair, with the first element being a composite_feature object and 
             the second being an integer k >= 0 representing the number of derived specialists added 
-            (see composite_feature.featurize(...) doc).
+            (see composite_feature.predictions(...) doc).
         labeled_set: Matrix of labeled data, {# examples} rows and {# features} cols.
         labeled_labels: Vector containing the labels of the labeled data.
         unlabeled_set: As labeled_set, but with the unlabeled dataset. 
@@ -102,7 +102,7 @@ class Marvin(object):
                 updates. Defaults to 1 (every update is totally corrective). 0 indicates that 
                 updates should not be totally corrective. 
             k: optional int; Approximate number of derived specialists to generate 
-                from the new classifier. See composite_feature.featurize(...) docs.
+                from the new classifier. See composite_feature.predictions(...) docs.
             correction_duration: optional int; Number of iterations of totally corrective SGD 
                 to run each iteration. Increase if total correction is not near reaching equilibrium.
             failure_prob: optional float; The allowed failure (tail) probability used to define 
@@ -198,10 +198,11 @@ class Marvin(object):
             new_classifier, self.holdout_set, self.holdout_labels, 
             failure_prob=failure_prob, use_tree_partition=self._use_tree_partition)
         self.enslist.append((cl_composite, k))
-        xtra_out, newb = cl_composite.featurize(self.holdout_set, k=k)
-        xtra_unl, _ = cl_composite.featurize(self.unlabeled_set, k=k)
-        xtra_val, _ = cl_composite.featurize(self.validation_set, k=k)
-        xtra_lab, _ = cl_composite.featurize(self.labeled_set, k=k)
+        newb = cl_composite.relevant_label_corrs(k=k)
+        xtra_out = cl_composite.predictions(self.holdout_set, k=k)
+        xtra_unl = cl_composite.predictions(self.unlabeled_set, k=k)
+        xtra_val = cl_composite.predictions(self.validation_set, k=k)
+        xtra_lab = cl_composite.predictions(self.labeled_set, k=k)
         self._labeled_set_feats.append(xtra_lab)
         self._unlabeled_set_feats.append(xtra_unl)
         self._holdout_set_feats.append(xtra_out)
@@ -246,8 +247,8 @@ class Marvin(object):
         """
         featlist = []
         for cl, k in self.enslist:
-            predictions, _ = cl.featurize(data, k=k)
-            featlist.append(predictions)
+            preds = cl.predictions(data, k=k)
+            featlist.append(preds)
         ft = sp.sparse.csr_matrix(sp.sparse.hstack(featlist))
         scores = ft.dot(self.weights)
         return np.clip(scores, -1, 1)
@@ -327,7 +328,7 @@ python marvin.py <data file> <total_labels> <number of iterations>
 <number of Monte Carlo trials> 
 
 Example:
-python marvin.py Data/covtype_binary_all.csv 10000 100 
+Data/covtype_binary_all.csv 10000 -u 20000 -f 0.01
 """
 if __name__ == "__main__":
     from sklearn.tree import DecisionTreeClassifier
@@ -351,7 +352,7 @@ if __name__ == "__main__":
     parser.add_argument('--k', '-k', type=int, default=0, 
         help="""Approximate number of derived specialists to generate from each base classifier.
         More precisely, the best k (by Wilson error bound) are taken, along with the base classifier if it is not already 
-        one of the best k. See composite_feature.featurize(...) docs for more details. Defaults to 0.""")
+        one of the best k. See composite_feature.predictions(...) docs for more details. Defaults to 0.""")
     parser.add_argument('--validation_set_size', '-v', type=int, default=1000, 
         help='Number of validation data.')
     args = parser.parse_args()
@@ -371,7 +372,7 @@ if __name__ == "__main__":
             (x_train, y_train, x_unl, y_unl, x_out, y_out, x_validate, y_validate) = muffled_utils.read_random_data_from_csv(
                 args.labeled_file, labeled_set_size, args.unlabeled_set_size, holdout_set_size, args.validation_set_size)
             print('Data loaded. \tTime = ' + str(time.time() - inittime))
-            marv = Marvin(DecisionTreeClassifier(max_depth=None), x_train, y_train, 
+            marv = Marvin(DecisionTreeClassifier(max_depth=20), x_train, y_train, 
                 x_unl, x_out, y_out, unlabeled_labels=y_unl, 
                 validation_set=x_validate, validation_labels=y_validate)
             statauc, (lab_particles, unl_particles, val_particles) = marv.aggregate(

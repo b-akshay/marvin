@@ -7,17 +7,12 @@ import random
 import matplotlib.pyplot as plt
 import sklearn.metrics
 import itertools
-from sklearn.cross_validation import train_test_split
+import sklearn
 
 
 """
-A collection of utility functions for data manipulation and line search, 
-as needed by muffled semi-supervised learning algorithms. 
-
-This class has several todos:
-- Function to munge text into indicator features for use by the algorithm 
-(needs to be implemented sparsely if possible). 
-- Function to munge libSVM data (most text datasets)
+A collection of utility functions for data manipulation and other helper functions, 
+useful for muffled semi-supervised learning algorithms. 
 """
 
 def golden_section_search(f, left, right, tol=0.00001):
@@ -46,6 +41,71 @@ def golden_section_search(f, left, right, tol=0.00001):
             f_memoized_d = f(d)
     return (left + right)*0.5
 
+def calc_specialist_weights(numsamps):
+    """
+    Calculates vector of specialist weights.
+    Args:
+        numsamps: A nonnegative vector of ints, specifying the number of samples on which each specialist predicts.
+    Returns:
+        A vector of floats specifying each specialist's weight (1/(fraction of data supported)). 
+        If numsamps[i] == 0 for some specialist i, the corresponding weight will be 0. 
+    Note that the return value is invariant to the scaling of numsamps by a positive constant. 
+    Similarly, calculating numsamps using a uniform random subsample of a dataset 
+    will result in approximately the same return value as using the full dataset.
+    """
+    weights = 1.0/numsamps
+    weights[np.isinf(weights)] = 0.0
+    return np.max(numsamps)*weights
+
+def normalize_predmat(predmat, sample_counts=None):
+    """
+    Normalize a matrix of predictions of specialists. 
+    Args:
+        predmat: A matrix of predictions of specialist classifiers; 0 indicates abstaining.
+            One row for each example, one col for each classifier.
+        sample_counts: A nonnegative vector of ints, specifying the number of samples on which each specialist predicts.
+    Returns:
+        The normalized prediction matrix. 
+    """
+    abst_indicators = np.abs(np.sign(predmat))
+    if sample_counts is None:
+        sample_counts = np.array(abst_indicators.sum(axis=0)).flatten()
+    spec_weights = calc_specialist_weights(sample_counts)
+    return sp.sparse.csr_matrix(predmat).multiply(sp.sparse.lil_matrix(spec_weights))
+
+def calc_b_wilson(labelcorrs_plugin, numsamps, failure_prob=0.01):
+    """
+    Calculate Wilson interval lower bound on label correlation for each classifier.
+
+    Args:
+        labelcorrs_plugin: Array containing estimated label correlation for each classifier. 
+            Assumed to be >= 0. 
+        numsamps: Array containing the number of (labeled) samples used 
+            to estimate the corresponding element of labelcorrs_plugin. 
+        failure_prob: Optional float specifying the allowed failure (tail) probability used 
+            to define the Wilson confidence interval for each classifier.
+            Defaults to 0.01, a fairly aggressive value in practice.
+
+    Returns: 
+        Array containing the Wilson interval lower bound on label correlation for each classifier. 
+        An entry of the array is zero iff either of the following conditions 
+        are met by the corresponding classifier: 
+        (a) It always abstains (i.e. numsamps[classifier index] == 0). 
+        (b) Its error is estimated on too few samples to sufficiently narrow the error bar, 
+            so that the Wilson lower bound is <= 0. In other words, the interval contains 0.
+    """
+    err_est = 0.5*(1.0 - labelcorrs_plugin)
+    z = sp.stats.norm.ppf(0.5*(2-failure_prob))
+    zsq_n = z*z/numsamps
+    sleeping_specs = np.isinf(zsq_n)
+    recentered_mean_errors = np.multiply(1.0/(1+zsq_n), (err_est + 0.5*zsq_n))
+    recentered_plugins = 1.0 - 2*recentered_mean_errors
+    stddevs = np.sqrt(np.multiply(zsq_n, np.multiply(
+        err_est, 1.0 - err_est)) + np.square(0.5*zsq_n))
+    stddevs = np.multiply(1.0/(1+zsq_n), stddevs)
+    toret = np.maximum(recentered_plugins - 2*stddevs, 0.0)
+    toret[sleeping_specs] = 0.0
+    return toret
 
 """
 ===============================================================================
@@ -53,7 +113,7 @@ GENERATING PLOTS, RESULTS, AND DIAGNOSTICS
 ===============================================================================
 """
 
-def diagnostic_margin_info (margdiag, true_labels, numbins=0):
+def diagnostic_margin_info(margdiag, true_labels, numbins=0):
     hedged_ndces = np.where(np.abs(margdiag) < 1)[0]
     clipped_ndces = np.where(np.abs(margdiag) >= 1)[0]
     preds_out = np.clip(margdiag, -1, 1)
@@ -81,13 +141,13 @@ def diagnostic_margin_info (margdiag, true_labels, numbins=0):
         (m > 0) and (true_labels[i] == 1.0))])
     return plt
 
-def plot_weights (datafeats):
+def plot_weights(datafeats):
     a = csr_matrix(datafeats.max(axis=0).transpose()).toarray().flatten()
     plt.hist(a, np.clip(0.2*len(a), 25, 100))
     return plt
 
 # Plot avg true label in bins, compare to CRP
-def cumulabel_plot (preds, numbins=0):
+def cumulabel_plot(preds, numbins=0):
     if numbins == 0:
         numbins = max(25, 0.05*len(preds))
     #plusndxs = np.where(y_test == 1)[0]
@@ -138,12 +198,12 @@ def init_data(labeled_file, LABELED_SET_SIZE,
 
     y_all = np.array([x[0] for x in data])
     x_all = np.array([x[1:] for x in data])
-    xtrte, x_outall, ytrte, y_outall = train_test_split(
+    xtrte, x_outall, ytrte, y_outall = sklearn.model_selection.train_test_split(
         x_all, y_all, 
         test_size=HOLDOUT_SET_SIZE + HOLDOUT_SET2_SIZE, random_state=42)
-    x_out, x_out2, y_out, y_out2 = train_test_split(
+    x_out, x_out2, y_out, y_out2 = sklearn.model_selection.train_test_split(
         x_outall, y_outall, test_size=HOLDOUT_SET2_SIZE)
-    x_train, x_unl, y_train, y_unl = train_test_split(
+    x_train, x_unl, y_train, y_unl = sklearn.model_selection.train_test_split(
         xtrte, ytrte, test_size=UNLABEL_SET_SIZE, random_state=42)
     return (x_train, y_train, x_unl, y_unl, x_out, y_out, x_out2, y_out2)
 
@@ -189,57 +249,13 @@ def read_random_data_from_csv(
     y_all = np.zeros(len(y_raw))
     y_all[np.where(y_raw == uq[0])[0]] = -1
     y_all[np.where(y_raw == uq[1])[0]] = 1
-    xtrhoval, x_unl, ytrhoval, y_unl = sklearn.cross_validation.train_test_split(
+    xtrhoval, x_unl, ytrhoval, y_unl = sklearn.model_selection.train_test_split(
         x_all, y_all, test_size=unlabeled_set_size)
-    x_trho, x_validate, y_trte, y_validate = sklearn.cross_validation.train_test_split(
+    x_trho, x_validate, y_trte, y_validate = sklearn.model_selection.train_test_split(
         xtrhoval, ytrhoval, test_size=validation_set_size)
-    x_train, x_out, y_train, y_out = sklearn.cross_validation.train_test_split(
+    x_train, x_out, y_train, y_out = sklearn.model_selection.train_test_split(
         x_trho, y_trte, test_size=holdout_set_size)
     return (x_train, y_train, x_unl, y_unl, x_out, y_out, x_validate, y_validate)
-
-def gen_compfeats(classifier_arr, x_out, y_out, x_unl, x_validate, 
-    k=0, failure_prob=0.01, from_sklearn_rf=False, use_tree_partition=True):
-    """
-    Generate predictions on multiple datasets from a list of classifiers, like trees 
-    in a random forest, and their derived specialists. 
-    Args:
-        classifier_arr: List of classifiers from which to derive specialists and 
-            generate predictions on data.
-        x_out: Holdout dataset from which to calculate label correlations of ensemble. 
-            Matrix with {# examples} rows and {# features} cols.
-        y_out: Vector of holdout set's labels.
-        x_unl: As x_out, but unlabeled dataset.
-        x_validate: As x_out, but validation dataset.
-    Returns:
-        4-tuple. First element is the vector of label correlations of the input classifiers 
-        and any of their derived specialists. Second, third, and fourth elements are 
-        matrices representing ensemble prediction on unlabeled, holdout, and validation sets 
-        respectively, with {# classifiers} columns, and a row for each example.
-    """
-    listfeats_unl = []
-    listfeats_out = []
-    listfeats_val = []
-    listofbs = []
-    counter = 0
-    for h in classifier_arr:
-        counter += 1
-        compfeat = composite_feature.CompositeFeature(
-            h, x_out, y_out, failure_prob=failure_prob, from_sklearn_rf=from_sklearn_rf, 
-            use_tree_partition=use_tree_partition)
-        feats_out, newb = compfeat.featurize(x_out, k=k)
-        feats_unl, _ = compfeat.featurize(x_unl, k=k)
-        feats_val, _ = compfeat.featurize(x_validate, k=k)
-        listfeats_unl.append(feats_unl)
-        listfeats_out.append(feats_out)
-        listfeats_val.append(feats_val)
-        listofbs.append(newb)
-        if counter%10 == 0:
-            print ('Classifier ' + str(counter) + ' done.')     # \tTime = ' + str(time.time() - inittime))
-    allfeats_unl = sp.sparse.csr_matrix(sp.sparse.hstack(listfeats_unl))
-    allfeats_out = sp.sparse.csr_matrix(sp.sparse.hstack(listfeats_out))
-    allfeats_val = sp.sparse.csr_matrix(sp.sparse.hstack(listfeats_val))
-    b_vector = np.hstack(tuple(listofbs))
-    return (b_vector, allfeats_unl, allfeats_out, allfeats_val)
 
 def libsvm_to_sparse(filegen, numfeat):
     """ Input: a generator of LibSVM file lines (a minibatch). 
@@ -307,7 +323,6 @@ def init_base_classifiers(x_train, y_train, num_iters=100):
         skcl[i][1].fit(x_train, y_train)
         print(skcl[i][0] + ' trained', time.time() - inittime)
     return skcl
-
 
 def accuracy_calc (y_true, y_pred, sample_weight=None):
     if sample_weight is not None:
