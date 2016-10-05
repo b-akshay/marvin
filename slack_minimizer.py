@@ -193,12 +193,6 @@ A basic working example:
 (*) Uses 1/4 of the labeled data to train a random forest with 100 trees, and the other 3/4 to estimate 
     the b_vector over the random forest trees (without deriving specialists).
 (*) Minimizes the slack function over the 100 trees.
-Usage: 
-python slack_minimizer.py <input data file name> <# of labeled data> <# of unlabeled data> 
-<Wilson failure probability> <number of trees in random forest>
-Example:
-python slack_minimizer.py Data/covtype_binary_all.csv 10000 50000 0.005 25
-creates file: logs/covtype_tree_0.005_allrel_10000.csv
 """
 if __name__ == "__main__":
     import time, csv, sys
@@ -228,9 +222,13 @@ if __name__ == "__main__":
         one of the best k. See CompositeFeature.predictions(...) docs for more details. Defaults to 0.""")
     parser.add_argument('--validation_set_size', '-v', type=int, default=1000, 
         help='Number of validation data.')
+    parser.add_argument('--sgd_duration', '-d', type=int, default=30, 
+        help='Number of iterations to run the optimization (stochastic gradient descent).')
+    parser.add_argument('--tree_node_specialists', action='store_true', 
+        help='Use internal nodes of decision trees as specialists.')
     args = parser.parse_args()
 
-    root = 'muffled'
+    root = 'muf_ssl'
     labeled_set_size = int(args.total_labels*0.25)
     holdout_set_size = args.total_labels - labeled_set_size
     logname_auc = 'logs/' + root + '_' + str(args.total_labels) + '_tailprob' + str(args.failure_prob) + '_auc.csv'
@@ -249,12 +247,12 @@ if __name__ == "__main__":
             print('Random forest trained. \tTime = ' + str(time.time() - inittime))
             (b_vector, allfeats_out, allfeats_unl, allfeats_val) = composite_feature.predict_multiple(
                 rf.estimators_, x_out, x_unl, x_validate, y_out=y_out, k=args.k, 
-                failure_prob=args.failure_prob, from_sklearn_rf=True, use_tree_partition=False)
+                failure_prob=args.failure_prob, from_sklearn_rf=True, use_tree_partition=args.tree_node_specialists)
             print ('Featurizing done. \tTime = ' + str(time.time() - inittime))
             gradh = SlackMinimizer(
                 b_vector, allfeats_unl, allfeats_out, y_out, unlabeled_labels=y_unl,
                 validation_set=allfeats_val, validation_labels=y_validate)
-            statauc = gradh.sgd(30, unl_stride_size=0, logging_interval=5)
+            statauc = gradh.sgd(args.sgd_duration, unl_stride_size=0, logging_interval=5)
             print 'Final validation AUC:\t' + str(gradh.compute_AUC())
 
             _, _, _, _, cl_err, cl_auc = zip(*statauc)

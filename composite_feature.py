@@ -49,9 +49,7 @@ class CompositeFeature(object):
             init_data: Matrix of input data, one row per example. Dimensions: {# examples} rows, {# features} columns. 
             init_labels: Vector of labels of init_data, one label per example. None if no labels given.
             failure_prob: Float; allowed failure (tail) probability used to define the Wilson confidence interval for each classifier.
-            k: Optional int, approximately specifying the number of derived specialists to select; see self.predictions(...) docs.
-            sample_counts: Optional vector of ints, specifying the number of samples 
-                on which each specialist predicts. Defaults to being calculated from init_data.
+            sample_counts: Vector of ints, specifying the number of samples on which each specialist predicts. 
         """
         # Does not call self.predictions(...) because that function only computes on relevant specialists, 
         # while this one must compute on all specialists to figure out which are relevant. 
@@ -74,7 +72,6 @@ class CompositeFeature(object):
             labelcorrs_plugin = np.abs(labelcorrs_plugin)
             self.label_corrs = muffled_utils.calc_b_wilson(
                 labelcorrs_plugin, self._numsamps, failure_prob=failure_prob)
-            #self._numsamp_min = numsamp_min
             self._update_relevant_ndces()
 
     def predictions(self, dataset, k=-1):
@@ -89,7 +86,6 @@ class CompositeFeature(object):
                 base classifier if it is not already one of the best k. So k==0 means this is just a 
                 wrapper around the base classifier's predictions. Defaults to -1, which selects 
                 all derived specialists with Wilson intervals not containing error 1/2. 
-                Any other k 
 
         Returns:
             A matrix of the selected classifiers' predictions, with {# examples} rows 
@@ -285,10 +281,10 @@ def predict_multiple(classifier_arr, x_out, x_unl, x_validate, y_out=None,
         x_validate: As x_out, but validation dataset.
         y_out: Optional vector of holdout set's labels; defaults to None.
     Returns:
-        4-tuple. First element is the vector of label correlations of the input classifiers 
-        and any of their derived specialists, measured on the holdout set. Second element is a 
-        matrix of ensemble predictions on the holdout set, with {# classifiers} columns, 
-        and a row for each example. Third and fourth elements are similar, on unlabeled and validation sets.
+        4-tuple (A,B,C,D). A is a vector of label correlations of the input classifiers 
+        and any of their derived specialists, measured on the holdout set (defaults to zeroes if y_out not given).
+        B is a matrix of ensemble predictions on the holdout set, with {# classifiers} columns, 
+        and {# examples} rows. C and D are similar to B, on unlabeled and validation sets respectively.
     """
     listfeats_unl = []
     listfeats_out = []
@@ -300,13 +296,13 @@ def predict_multiple(classifier_arr, x_out, x_unl, x_validate, y_out=None,
         compfeat = CompositeFeature(h, x_out, init_labels=y_out, failure_prob=failure_prob, 
             from_sklearn_rf=from_sklearn_rf, use_tree_partition=use_tree_partition)
         newb = compfeat.relevant_label_corrs(k=k)
+        listofbs.append(newb)
         feats_out = compfeat.predictions(x_out, k=k)
         feats_unl = compfeat.predictions(x_unl, k=k)
         feats_val = compfeat.predictions(x_validate, k=k)
         listfeats_unl.append(feats_unl)
         listfeats_out.append(feats_out)
         listfeats_val.append(feats_val)
-        listofbs.append(newb)
         if counter%logging_interval == 0:
             print ('Classifier ' + str(counter) + ' done.')     # \tTime = ' + str(time.time() - inittime))
     allfeats_unl = sp.sparse.csr_matrix(sp.sparse.hstack(listfeats_unl))

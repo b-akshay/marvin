@@ -1,13 +1,11 @@
 import numpy as np
 import scipy as sp
-import math
+import math, random
 from scipy.sparse import csr_matrix
 import time
-import random
 import matplotlib.pyplot as plt
-import sklearn.metrics
+import sklearn.metrics, sklearn.model_selection
 import itertools
-import sklearn
 
 
 """
@@ -21,7 +19,7 @@ def golden_section_search(f, left, right, tol=0.00001):
     Follows Kiefer (1953) "Sequential minimax search for a maximum", but memoizes 
     intermediate function values, as evaluation of f is relatively expensive.
     """
-    phi = (math.sqrt(5)-1)/2  #Golden ratio.
+    phi = (math.sqrt(5)-1)/2    # Golden ratio.
     c = right - phi*(right - left)
     d = left + phi*(right - left)
     f_memoized_c = f(c)
@@ -49,6 +47,7 @@ def calc_specialist_weights(numsamps):
     Returns:
         A vector of floats specifying each specialist's weight (1/(fraction of data supported)). 
         If numsamps[i] == 0 for some specialist i, the corresponding weight will be 0. 
+
     Note that the return value is invariant to the scaling of numsamps by a positive constant. 
     Similarly, calculating numsamps using a uniform random subsample of a dataset 
     will result in approximately the same return value as using the full dataset.
@@ -106,62 +105,6 @@ def calc_b_wilson(labelcorrs_plugin, numsamps, failure_prob=0.01):
     toret = np.maximum(recentered_plugins - 2*stddevs, 0.0)
     toret[sleeping_specs] = 0.0
     return toret
-
-"""
-===============================================================================
-GENERATING PLOTS, RESULTS, AND DIAGNOSTICS
-===============================================================================
-"""
-
-def diagnostic_margin_info(margdiag, true_labels, numbins=0):
-    hedged_ndces = np.where(np.abs(margdiag) < 1)[0]
-    clipped_ndces = np.where(np.abs(margdiag) >= 1)[0]
-    preds_out = np.clip(margdiag, -1, 1)
-    mv_preds_out = np.sign(margdiag)
-    if (len(hedged_ndces) > 0 and len(clipped_ndces) > 0):
-        print('Fraction hedged', 1.0*len(hedged_ndces)/len(margdiag))
-        print('Accuracy on {hedged, clipped}', 
-              accuracy_calc (true_labels[hedged_ndces], 
-                preds_out[hedged_ndces]), 
-              accuracy_calc (true_labels[clipped_ndces], 
-                preds_out[clipped_ndces]))
-        print('Accuracy/AUC of vote', accuracy_calc (true_labels, mv_preds_out), 
-              sklearn.metrics.roc_auc_score (true_labels, mv_preds_out))
-    #hist_arr, bins, _ = plt.hist(margdiag, numbins)
-    #binndxs = np.digitize(margdiag, bins)
-    pluses = np.where(np.sign(true_labels) == 1.0)[0]
-    minuses = np.where(np.sign(true_labels) == -1.0)[0]
-    print(len(pluses), len(minuses))
-
-    if numbins == 0:
-        numbins = np.clip(0.05*len(margdiag), 25, 100)
-    plt.hist(margdiag[pluses], numbins, alpha = 0.5, label='+1', color='green')
-    plt.hist(margdiag[minuses], numbins, alpha = 0.5, label='-1', color='red')
-    print len([m for i,m in enumerate(margdiag) if (
-        (m > 0) and (true_labels[i] == 1.0))])
-    return plt
-
-def plot_weights(datafeats):
-    a = csr_matrix(datafeats.max(axis=0).transpose()).toarray().flatten()
-    plt.hist(a, np.clip(0.2*len(a), 25, 100))
-    return plt
-
-# Plot avg true label in bins, compare to CRP
-def cumulabel_plot(preds, numbins=0):
-    if numbins == 0:
-        numbins = max(25, 0.05*len(preds))
-    #plusndxs = np.where(y_test == 1)[0]
-    #minusndxs = np.where(y_test == 0)[0]
-    labfreqs = np.array(
-        [np.mean(preds[np.where(binndxs == i)[0]]) for i in range(1,1+numbins)])
-    #labfreqsplus = 2*(labelFreqs (margs, y_test, numbins)) - 1
-    #labfreqsminus = 2*(labelFreqs (margs, y_test, numbins)) - 1
-    fig = plt.figure()
-    ax1 = fig.add_subplot(111)
-    ax1.plot(bins, labfreqs, 'r-', linewidth=2)
-    #ax1.plot(labbins, labbins, 'g--')
-    plt.title('Approximate average label vs. averaged ensemble prediction')
-    return plt
 
 
 """
@@ -240,6 +183,20 @@ def samp_file_to_arr(labeled_file, total_size):
 
 def read_random_data_from_csv(
     file_name, training_set_size, unlabeled_set_size, holdout_set_size, validation_set_size):
+    """
+    Reads {training, unlabeled, holdout, validation} datasets from a CSV file.
+
+    Args:
+        file_name: Path at which to find CSV file with data, with labels constituting
+            the first column, and features the remaining columns. 
+        training_set_size, unlabeled_set_size, holdout_set_size, validation_set_size: 
+            Integers representing the desired numbers of data in the four output datasets.
+
+    Returns: An 8-tuple (A1, A2, B1, B2, C1, C2, D1, D2). A1 is a numpy matrix representing 
+        the training set, one example per row, and A2 is a vector of the training labels. 
+        B1 and B2 are the same for the unlabeled set; C1, C2 for the holdout set; and 
+        D1, D2 for the validation set.
+    """
     data = samp_file_to_arr(
         file_name, training_set_size + unlabeled_set_size + holdout_set_size + validation_set_size)
     y_raw = np.array([x[0] for x in data])
@@ -348,3 +305,59 @@ def accuracy_calc (y_true, y_pred, sample_weight=None):
 #     minus_contrib = 0.5*np.dot(
 #         np.array(np.multiply(minus_pred, sample_weight)), minus_true)
 #     return plus_contrib + minus_contrib
+
+"""
+===============================================================================
+Generating Plots and Diagnostics
+===============================================================================
+"""
+
+def diagnostic_margin_info(margdiag, true_labels, numbins=0):
+    hedged_ndces = np.where(np.abs(margdiag) < 1)[0]
+    clipped_ndces = np.where(np.abs(margdiag) >= 1)[0]
+    preds_out = np.clip(margdiag, -1, 1)
+    mv_preds_out = np.sign(margdiag)
+    if (len(hedged_ndces) > 0 and len(clipped_ndces) > 0):
+        print('Fraction hedged', 1.0*len(hedged_ndces)/len(margdiag))
+        print('Accuracy on {hedged, clipped}', 
+              accuracy_calc (true_labels[hedged_ndces], 
+                preds_out[hedged_ndces]), 
+              accuracy_calc (true_labels[clipped_ndces], 
+                preds_out[clipped_ndces]))
+        print('Accuracy/AUC of vote', accuracy_calc (true_labels, mv_preds_out), 
+              sklearn.metrics.roc_auc_score (true_labels, mv_preds_out))
+    #hist_arr, bins, _ = plt.hist(margdiag, numbins)
+    #binndxs = np.digitize(margdiag, bins)
+    pluses = np.where(np.sign(true_labels) == 1.0)[0]
+    minuses = np.where(np.sign(true_labels) == -1.0)[0]
+    print(len(pluses), len(minuses))
+
+    if numbins == 0:
+        numbins = np.clip(0.05*len(margdiag), 25, 100)
+    plt.hist(margdiag[pluses], numbins, alpha = 0.5, label='+1', color='green')
+    plt.hist(margdiag[minuses], numbins, alpha = 0.5, label='-1', color='red')
+    print len([m for i,m in enumerate(margdiag) if (
+        (m > 0) and (true_labels[i] == 1.0))])
+    return plt
+
+def plot_weights(datafeats):
+    a = csr_matrix(datafeats.max(axis=0).transpose()).toarray().flatten()
+    plt.hist(a, np.clip(0.2*len(a), 25, 100))
+    return plt
+
+# Plot avg true label in bins, compare to CRP
+def cumulabel_plot(preds, numbins=0):
+    if numbins == 0:
+        numbins = max(25, 0.05*len(preds))
+    #plusndxs = np.where(y_test == 1)[0]
+    #minusndxs = np.where(y_test == 0)[0]
+    labfreqs = np.array(
+        [np.mean(preds[np.where(binndxs == i)[0]]) for i in range(1,1+numbins)])
+    #labfreqsplus = 2*(labelFreqs (margs, y_test, numbins)) - 1
+    #labfreqsminus = 2*(labelFreqs (margs, y_test, numbins)) - 1
+    fig = plt.figure()
+    ax1 = fig.add_subplot(111)
+    ax1.plot(bins, labfreqs, 'r-', linewidth=2)
+    #ax1.plot(labbins, labbins, 'g--')
+    plt.title('Approximate average label vs. averaged ensemble prediction')
+    return plt
