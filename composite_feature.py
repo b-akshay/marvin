@@ -70,7 +70,7 @@ class CompositeFeature(object):
             # or anti-correlated (-1) with the true labels; allows inversion of the latter into the former.
             self._preds_flip = np.sign(labelcorrs_plugin)
             labelcorrs_plugin = np.abs(labelcorrs_plugin)
-            self.label_corrs = muffled_utils.calc_b_wilson(
+            self.label_corrs = muffled_utils.calc_b_bound(
                 labelcorrs_plugin, self._numsamps, failure_prob=failure_prob)
             self._update_relevant_ndces()
 
@@ -183,7 +183,7 @@ class CompositeFeature(object):
         """
         Updates the list of relevant indices (self._relevant_ndces). This contains:
         (1) The base classifier in all cases (so it always has length >= 1). 
-        (2) Any derived specialist with nonzero Wilson bound (see muffled_utils.calc_b_wilson(...) 
+        (2) Any derived specialist with nonzero Wilson bound (see muffled_utils.calc_b_bound(...) 
             docs for details on when this happens).
         """
         all_ndces = range(len(self._numsamps))

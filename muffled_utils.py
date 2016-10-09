@@ -66,9 +66,9 @@ def normalize_predmat(predmat, sample_counts=None):
     Returns:
         The normalized prediction matrix. 
     """
-    abst_indicators = np.abs(np.sign(predmat))
+    pred_indicators = np.abs(np.sign(predmat))
     if sample_counts is None:
-        sample_counts = np.array(abst_indicators.sum(axis=0)).flatten()
+        sample_counts = np.array(pred_indicators.sum(axis=0)).flatten()
     spec_weights = calc_specialist_weights(sample_counts)
     return sp.sparse.csr_matrix(predmat).multiply(sp.sparse.lil_matrix(spec_weights))
 
@@ -83,7 +83,7 @@ def calc_b_wilson(labelcorrs_plugin, numsamps, failure_prob=0.01):
             to estimate the corresponding element of labelcorrs_plugin. 
         failure_prob: Optional float specifying the allowed failure (tail) probability used 
             to define the Wilson confidence interval for each classifier.
-            Defaults to 0.01, a fairly aggressive value in practice.
+            Defaults to 0.01, a fairly aggressive value in practice for larger datasets.
 
     Returns: 
         Array containing the Wilson interval lower bound on label correlation for each classifier. 
@@ -105,6 +105,9 @@ def calc_b_wilson(labelcorrs_plugin, numsamps, failure_prob=0.01):
     toret = np.maximum(recentered_plugins - 2*stddevs, 0.0)
     toret[sleeping_specs] = 0.0
     return toret
+
+def calc_b_bound(labelcorrs_plugin, numsamps, failure_prob=0.01):
+    return calc_b_wilson(labelcorrs_plugin, numsamps, failure_prob=failure_prob)
 
 
 """
@@ -156,7 +159,7 @@ def shuf_data(labeled_file, total_size, target_file):
         for item in buf:
             fo.write(item)
 
-def samp_file_to_arr(labeled_file, total_size):
+def samp_file_to_arr(labeled_file, total_size, entry_dtype='f8'):
     """
     Sample a subset of rows from an input file uniformly at random in one pass
     (using reservoir sampling) and return these rows as a matrix.
@@ -176,7 +179,7 @@ def samp_file_to_arr(labeled_file, total_size):
             r = random.random()
             if n <= total_size:
                 buf.append(line)
-            elif r < total_size/n:
+            elif r < 1.0*total_size/n:
                 loc = random.randint(0, total_size-1)
                 buf[loc] = line
     return np.array([np.fromstring(s, sep=',', dtype='f8') for s in buf])
